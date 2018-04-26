@@ -1,0 +1,483 @@
+\documentclass[letterpaper]{article}
+\input{helper/header} %Formatting, macros, package list, etc
+\usepackage{tabularx}
+\usepackage{indentfirst}
+
+\title{Wine Classification}
+\subtitle{Final Project}
+\assignedDate{2016-11-02}
+\dueDate{2016-12-09}
+\studentName{Wesley Pryor}
+
+
+\begin{document}
+<<echo=FALSE, eval=TRUE, include=FALSE>>=
+library(knitr)
+knitr::opts_chunk$set(echo=TRUE, eval=TRUE, include=TRUE, tidy=TRUE, results='tex', fig.width=4, fig.asp=1, fig.align='center')
+render_listings()
+
+#packages
+library(kknn)
+library(class)
+library(party)
+library(rpart)
+library(rattle)
+library(exact2x2)
+library(e1071)
+library(rpart.plot)
+library(mlbench)
+library(nnet)
+library(kernlab)
+library(microbenchmark)
+library(flexclust)
+library(pROC)
+library(ggplot2)
+
+# Confusion funciton
+confusion = function(true,pred,costs=NULL){
+  counts <- table(true,pred)
+  N <- sum(counts)
+  acc = sum(diag(counts))/N
+  rates = prop.table(counts,1)
+  rates[is.nan(rates)] <- 0
+  sensitivities = diag(rates)
+  precisions = diag(prop.table(counts,2))
+  precisions[is.nan(precisions)] <- 0
+  F1s = 2*sensitivities*precisions/(sensitivities+precisions)
+  F1s[is.nan(F1s)] <- 0
+  if(is.null(costs)){
+    costs=0*counts+1 
+    diag(costs)<-0 
+  }
+  cost = sum(counts*costs)
+  return(list(counts=counts,acc=acc,rates=rates,sensitivities=sensitivities,precisions=precisions,F1s=F1s,cost=cost))
+}
+
+#Splitdata function for splitting data
+splitdata <- function(data, trainfrac){
+  datasplit <- sample(nrow(data),round(trainfrac*nrow(data),0))
+  traindata <- data[datasplit,]
+  testdata <- data[-datasplit,]
+  return(list(traindata=traindata, testdata=testdata))
+}
+
+#Testing normality
+normality = function(data){
+  hist(data)
+  print(shapiro.test(data))
+  qqnorm(data)
+}
+
+#Discretizing function
+mycut = function(x,n){
+  q = quantile(x, probs = seq(0, 1, length.out=n+1))
+  z = cut(x,q,include.lowest=T)
+  return(z)
+}
+
+#fold creation function
+createfolds=function(n,K){
+  reps=ceiling(n/K)
+  non_rand_folds = rep(1:K,reps) 
+  non_rand_folds = non_rand_folds[1:n] 
+  folds=sample(non_rand_folds) 
+  return(folds[1:n])
+}
+@
+\linenumbers
+
+\section*{Summary of Data and Models}
+The Wine Quality Data set is a set of data that contains observations of wines. This data comes form the UCI Machine Learning Repository. The data is divided into two sets.The first data set contains 4898 observations of white wines. The second data set has 1599 different red wines. The data contains 12 attributes. The data has 11 numeric attributes. The numeric attributes are fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulphates, and alcohol. The twelfth attribute is quality. This part of the data is usually what is trying to be calculated with a regression problem, or it is also determined via classification techniques. I was not sure how this attribute could be treated. I initially thought about treating it just as a normal numeric value. However, I wanted to see how to treat it as a factor.
+
+I decided to tackle this set of data by combining the red and white rows of data. The combines red and white data had 6,497 different type of wines from Portugal. I wanted to classify the wines between red and white.  For this project, I applied classification techniques that we have covered in class throughout the semester to determine the type of wine. The table below describes the techniques applied and the values of accuracy for the respective models. All original models were run with a simple 70-30 split and then cross-validation was applied to the models to determine the mean accuracy for each technique.
+\begin{table}[ht]
+\caption{Accuracy of Models Using Cross-Validation}
+\centering 
+\begin{tabular}{c c } 
+\hline\hline 
+Model & Accuracy \\ [0.5ex]
+\hline
+R Part Decision Trees & 0.9804547  \\ 
+C Tree Decision Trees & 0.9761422  \\
+K Nearest Neighbors & 0.9938433  \\
+Weighted K nearest Neighbors & 0.9943058  \\
+Naive Bayes & 0.9752199  \\ 
+Support Vector Machines & 0.9955366  \\
+Artificial Neural Networks & 0.9723155  \\[1ex] 
+\hline 
+\end{tabular}
+\end{table}
+
+\subsection*{R Part Decision Trees}
+When trying to classify the model. I initially ran the decision tree with the \texttt{rpart} package. This decision tree started with a depth of 4 and and accuracy of 97.6\%. Most of the data in the naive run of the tree was split from the counts of total sulfur dioxides and chlorides. The other factor involved was volatile acidity. Once this model was run, tuning was applied to the complexity parameter, minimum split, and the maximum depth of the trees. 
+
+For the complexity parameters, I decided that the best was to test small values from 0.0 to 0.2. After tuning was run, 0.001 was determined to be the most accurate parameter for the model. From our in class sources, I initially tried to test a minimum split of 5, 10, or 15. However, I was getting the same error rate for all of those values. After looking through the data more, I realized that trying to split with only 5, 10,, or 15 observations would be over-fitting the model and not very ideal. I then tried a splits of 50 125 by 5 and i saw that the errors began to change after 50 splits. 50 was determined to be the best minimum split. The maximum depth was decided from values between 1 and 10. The best tree had a depth of 6. Once complexity parameter, minimum split, and maximum depth were set to the optimal parameters, the accuracy of the rerun decision tree was 98\%. The best decision tree included fixed acidity in splitting the data into the type of wines, along with the other attributes that were in the naive tree. The optimal decision tree was run using 10 fold cross-validation and the mean of those accuracies was 98\%. 
+
+\subsection*{C Tree Decision Trees}
+In class this semester, our assignments led us to believe that the best decision tree was used with the \texttt{rpart} calculations instead of the \texttt{ctree} calculations.  I wanted to test the method and determine which method was better for this data. The first attempt of the model split most frequently with density, alcohol, total sulfur dioxides, sulphates and chlorides. Other attributes used in the model were pH, residual sugar, volatile acidity, fixed acidity, and chlorides. With these factors, the model had 69 nodes and the model has a depth of 8. The initial accuracy was 98.1\% The model was tuned for the minimum split and the maximum depth. It was tested for values of minimum split at 50, 100, and 150. The optimal value was 50. At maximum depth, values between 1 and 10 were tested. The best depth was calculated to be 10. The optimal tree was tested with these values and had an accuracy of 98.3\%.  The tree looked similar to the first run of a decision tree. However, the overall depth was increased by one. Once cross-validation was done with this model, the average accuracy was much lower at 97.6\%. I was suprised to see this. However, I believe that this was done from splits that had more data that was had similar values in certain categories. Overall after cross-validation of both methods, the \texttt{rpart} calculations were proven to be better for this data.
+
+\subsection*{K nearest neighbors}
+K nearest neighbors was standardized initially and was calculated with 3 nearest neighbors. This trial resulted in a 99.2\% accuracy. The trial was then tuned with nearest neighbors of 2 through 20. The method was also tuned with three different  types of sampling: cross-validation, fixed sampling, and bootstrapping. The best nearest neighbors for cross-validation was 5. Fixed sampling had an optimal nearest neighbor count of 11. Bootstrapping was 12. I tested the model with all the values of k that were determined in the sampling and then cross-validated. Through tuning and cross-validation, the overall average accuracy was 99.3\%
+
+\subsection*{Weighted K Nearest Neighbors}
+I wanted to test to see how the kernels of K nearest neighbors affected the values of the model. The first trial was with a triangular kernel and the accuracy was 99.2\%. I tested all eight kernels available. I expected that the optimal kernel would perform better than my first trial. After testing, the inverted kernel was determined to have minimal errors with 3 nearest neighbors. The accuracy was run once for a 99.2\% accuracy. cross-validation resulted in a mean 99.4\% accuracy.
+
+\subsection*{Naive Bayes}
+Naive Bayes has the assumption of normality. I had to first test the normality of all attributes of the data. The numerical values of the data were not normal. At this point I tried to see if I could treat the quality as a factor instead of a numerical value. All models had obvious curvature in all of the 	Q-Q Plots. Also, all Shapiro-Wilk tests returned the smallest possible p-values for a normal distribution. The data had to be cut to assume normality with the \texttt{mycut} function that was developed in this semester. The attributes that needed normalizing were cut into 10 factor levels. Due to time constraints, I was not able to test multiple cuts. I wish that I had tested multiple cuts to find the best cut for the model. Due to the size of the data, I tried 10 and felt like this was a good estimate. After normalization, the first attempt at the model had a 97.8\% accuracy. The model then underwent 10 fold cross-validation and had a mean accuracy of 97.5\%.
+
+\subsection*{Support Vector Machines}
+Before we could start Support Vector Machines, I removed the the combined database that was adjusted for normality. Then I recommitted the combined set of data and ran the support vector machines. The trial support vector machines had an accuracy of 99.6\% percent. The tuning then was tested for gamma and costs parameters. The first time that I tuned the function, the upper extremities were the best parameters. I then attempted to tune again with the upper extremities as the lower boundaries of the function. The second attempt at tuning the function resulted in the lower bounds, the original upper extremities, were the optimal gamma and cost. Therefore these values were used and the model after tuning was 99.6\%.
+
+\subsection*{Artificial Neural Networks}
+The neural networks was run using the \texttt{nnet} package. The first time it was run with 2 levels and a maximum iteration at 100. The first accuracy was at 99.8\% I changed the iterations to 500 and the size of the neural network to 10 hidden layers. During the run of the neural network command. The first iterations stopped at 230 and the accuracy was 99.7\%. The network was tuned with sizes of hidden layers between 1 and 15. Also the tuning function was applied with controls of 5 repeats, cross validation sampling, and 10 crosses. The tuning function ran cross validation and resulted in 97.2\% accuracy. I was shocked at this low value considering the first values that i got that were extremely high. I think that my first guess of 10 layers was the best for the model and the sum from all other sizes of hidden layers caused the value to overall be lower.
+
+\section*{Conclusion}
+Overall, Support Vector Machines were the optimal model for this data. Neural Networks and the C Tree Decision Trees were the overall worst models for the data. As I was working with the data, I really did not consider the chemical make up of a red wine and the chemical makeup of a white wine. I just wanted to run the data to see how it behaved on it's own. After looking more into the data, there are certain key attributes that really determine the model. Alcohol, density, total sulfur dioxides, free sulfur dioxides, chlorides, and pH were the best attributes that could determine the type of wine. Models where these were these were used instead of the whole data could probably perform at similar accuracies to the models run with all attributes. 
+
+\section*{Code Appendix}
+<<>>=
+set.seed(1506)
+# Importing Data Sets
+Red_Wine <- read.csv("~/Downloads/winequality-red.csv", sep=";")
+White_Wine <- read.csv("~/Downloads/winequality-white.csv", sep=";")
+
+# Adding the Type of Wine to the data set. 
+Red <- c(rep("red",nrow(Red_Wine)))
+White <- c(rep("white",nrow(White_Wine)))
+Red_Wine <- cbind(Red_Wine,Red)
+White_Wine <- cbind(White_Wine,White)
+
+# Changing the type of wine columns
+colnames(Red_Wine)[13] <- "wine.type"
+colnames(White_Wine)[13] <- "wine.type"
+
+# Combining Both Red and White Wines into one data set
+Total_Wine <- rbind(Red_Wine,White_Wine)
+Total_Wine$quality <- as.factor(Total_Wine$quality)
+
+# Item that will be predicted with the classification.
+Wine.Type <- Total_Wine$wine.type
+
+# Splitting Data for testing purposes
+Wine.Split <- splitdata(Total_Wine,0.7)
+Wine.train <- Wine.Split$traindata
+Wine.test <- Wine.Split$testdata
+
+# Decision Trees to determine the type of wine, red or white. 
+wine.tree <- rpart(wine.type~., data = Wine.train)
+plot.wine.tree <- fancyRpartPlot(wine.tree, palettes = c("Reds", "Greys"))
+pred.tree <- predict(wine.tree, newdata = Wine.test, type="class")
+
+#Analysis of the decision tree
+tree.conf <- confusion(Wine.test$wine.type,pred.tree,costs = NULL)
+tree.conf
+
+#Tuning decision tree
+tree.tune <- tune.rpart(wine.type~., data = Total_Wine, cp=seq(0,0.5,0.001), maxdepth = 1:10)
+tree.tune.2 <- tune.rpart(wine.type~., data = Total_Wine, minsplit = seq(50,125,5))
+plot(tree.tune)
+plot(tree.tune.2)
+
+#The best parameters for the rpart decision tree
+tree.tune$best.parameters
+tree.tune.2$best.parameters
+
+#Optimal rpart tree
+tree.2 <- rpart(wine.type~., data = Wine.train, control = rpart.control(minsplit = tree.tune.2$best.parameters$minsplit, cp = tree.tune$best.parameters$cp, maxdepth = tree.tune$best.parameters$maxdepth))
+fancyRpartPlot(tree.2, palettes = c("Reds", "Greys"))
+pred.tree.2 <- predict(tree.2, newdata = Wine.test, type = "class")
+
+#Analysis of optimal decision tree with cross validation
+tree.conf.2 <- confusion(Wine.test$wine.type,pred.tree.2,costs = NULL)
+tree.conf.2
+
+kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    temptree = rpart(wine.type~.,data=temptrain, control = rpart.control(minsplit = tree.tune.2$best.parameters$minsplit, cp = tree.tune$best.parameters$cp, maxdepth = tree.tune$best.parameters$maxdepth))
+    temppred = predict(temptree, newdata=temptest,type = "class")
+    analysis = confusion(temptest$wine.type, temppred)
+    accvector[k] = analysis$acc
+  }
+  return(mean(accvector))
+}
+
+kflval(10,Total_Wine)
+
+#Ctree
+wine.ctree <- ctree(wine.type~., data= Wine.train)
+plot(wine.ctree)
+
+#Prediction and confusion of ctree decision tree
+pred.tree.3 <- predict(wine.ctree, newdata = Wine.test)
+wine.ctree.conf <- confusion(Wine.test$wine.type, pred.tree.3, costs = NULL)
+wine.ctree.conf
+
+#Testing minsplit and maxdepth of ctree 
+maxdepth <- 1:10
+ #50 minsplit 
+  accvec <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 50, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,temp.pred, costs = NULL)
+    accvec[i] <- temp.conf$acc
+  }
+  
+  #100 misplit
+  accvec.2 <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 100, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,temp.pred, costs = NULL)
+    accvec.2[i] <- temp.conf$acc
+  }
+  
+  #150 minsplit
+  accvec.3 <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 150, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,temp.pred, costs = NULL)
+    accvec.3[i] <- temp.conf$acc
+  }
+
+#Creating information matrix
+max.depth <- as.vector(c(rep(list(1,2,3,4,5,6,7,8,9,10),3)))
+min.split <- as.vector(c(rep(list(50,100,150),10)))
+accuracy <- as.vector(rbind(accvec, accvec.2,accvec.3))
+acc.matrix <- cbind(max.depth,min.split,accuracy)
+colnames(acc.matrix)[1] <- "maxdepth"
+colnames(acc.matrix)[2] <- "misplit"
+colnames(acc.matrix)[3] <- "accuracy"
+which.max(accuracy)
+acc.matrix[which.max(accuracy),]
+  
+#Testing Optimal Ctree
+opt.ctree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 50, maxdepth = 10))
+plot(opt.ctree)
+opt.pred <- predict(opt.ctree, newdata = Wine.test)
+opt.conf <- confusion(Wine.test$wine.type, opt.pred, costs = NULL)
+opt.conf
+
+#Cross Validation with C Tree
+ctree.kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    temptree = ctree(wine.type~.,data=temptrain,controls = ctree_control(minsplit = 50, maxdepth = 10))
+    temppred = predict(temptree, newdata=temptest)
+    analysis = confusion(temptest$wine.type, temppred)
+    accvector[k] = analysis$acc
+  }
+  return(mean(accvector))
+}
+
+ctree.kflval(10,Total_Wine)
+
+# K nearest neighbors standardize the data
+x = Total_Wine[,1:11]
+xbar = apply(x,2,mean)
+xbarMat = cbind(rep(1,nrow(Total_Wine)))%*%xbar
+s = apply(x,2,sd)
+sMat = cbind(rep(1,nrow(Total_Wine)))%*%s
+z = (x-xbarMat)/sMat
+
+#K nearest neighbors sampling the data
+z.split <- sample(nrow(z),round(nrow(z)*0.7,0))
+z.train <- z[z.split,]
+z.test <- z[-z.split,]
+
+# K nearest neighbors Test
+wine.knn <- knn(train = z.train, test = z.test, k=3, cl = Wine.Type[z.split])
+confusion(Wine.Type[-z.split],wine.knn,costs=NULL)
+
+#Finding the optimal k for K nearest neighbors
+x <- Total_Wine[,-13]
+y <- Total_Wine[,13]
+knn.tune <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "cross"))
+knn.tune.2 <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "fix"))
+knn.tune.3 <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "boot"))
+plot(knn.tune)
+plot(knn.tune.2)
+plot(knn.tune.3)
+knn.tune$best.parameters$k
+knn.tune.2$best.parameters$k
+knn.tune.3$best.parameters$k
+wine.knn.2 <- knn(train = z.train, test = z.test, k=knn.tune$best.parameters$k, cl = Wine.Type[z.split])
+wine.knn.3 <- knn(train = z.train, test = z.test, k=knn.tune.2$best.parameters$k, cl = Wine.Type[z.split])
+wine.knn.4 <- knn(train = z.train, test = z.test, k=knn.tune.3$best.parameters$k, cl = Wine.Type[z.split])
+wine.knn.2.conf <- confusion(Wine.Type[-z.split],wine.knn.2,costs=NULL)
+wine.knn.3.conf <- confusion(Wine.Type[-z.split],wine.knn.3,costs=NULL)
+wine.knn.4.conf <- confusion(Wine.Type[-z.split],wine.knn.4,costs=NULL)
+
+#Cross Validation for K nearest neighbors
+cross.knn <- knn.cv(train = z, cl = y, k=knn.tune$best.parameters$k)
+cross.knn.conf <- confusion(Wine.Type, cross.knn)
+
+#Weighted K nearest neighbors
+z <- cbind(z, Wine.Type)
+z.train <- z[z.split,]
+z.test <- z[-z.split,]
+weight.knn.wine <- kknn(Wine.Type~.,train = z.train, test = z.test, k=knn.tune$best.parameters$k, kernel = "triangular")
+pred.weight <- predict(weight.knn.wine, newdata = z.test)
+confusion(z.test$Wine.Type, pred.weight)
+
+#Finding the best kernels
+tune.kknn <- function(K,kernels){
+  acc <- NULL
+  for(i in 1: length(K)){
+  temp.model <- kknn(Wine.Type~., train = z.train, test = z.test, k = i, kernel = kernels,distance = 2)
+  pred.temp <- predict(temp.model, newdata = z.test)
+  temp.conf <- confusion(z.test$Wine.Type, pred.temp)
+  acc[i] <- temp.conf$acc
+  }
+  opt.k <- which.max(acc)
+  opt.acc <- acc[opt.k]
+  return(list(k=opt.k, accuracy = opt.acc))
+}
+K <- 2:30
+rect <- tune.kknn(K,"rectangular")
+triangle <- tune.kknn(K, "triangular")
+ep <- tune.kknn(K, "epanechnikov")
+biw <- tune.kknn(K, "biweight")
+triw <- tune.kknn(K, "triweight")
+cosine <- tune.kknn(K,"cos")
+invert <- tune.kknn(K,"inv")
+gauss <- tune.kknn(K, "gaussian")
+rank.weight <- tune.kknn(K,"rank")
+optimal <- tune.kknn(K, "optimal")
+weighted.accuracy <- list(rect$accuracy, triangle$accuracy, ep$accuracy, biw$accuracy, triw$accuracy, cosine$accuracy, invert$accuracy, gauss$accuracy, rank.weight$accuracy, optimal$accuracy)
+weighted.k <- list(rect$k, triangle$k, ep$k, biw$k, triw$k, cosine$k, invert$k, gauss$k, rank.weight$k, optimal$k)
+
+opt.weights <- cbind(weighted.k,weighted.accuracy)
+opt.kknn <- kknn(Wine.Type~., train = z.train, test = z.test, k = 3, kernel = "inv")
+pred.kknn <- predict(opt.kknn, newdata = z.test)
+confusion(z.test$Wine.Type, pred.kknn)
+
+#Cross Validation fro Weighted K nearest neighbors
+kknn.kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    tempmodel = kknn(Wine.Type~., train = temptrain, test = temptest, k = 3, kernel = "inv")
+    temppred = predict(tempmodel, newdata=temptest, type = "raw")
+    analysis = confusion(temptest$Wine.Type, temppred)
+    accvector[k] = analysis$acc
+  }
+  return(mean(accvector))
+}
+
+kknn.kflval(10,z)
+
+#Investigating qualities of data Naive Bayes
+normality(Wine.train$fixed.acidity)
+normality(Wine.train$volatile.acidity)
+normality(Wine.train$citric.acid)
+normality(Wine.train$residual.sugar)
+normality(Wine.train$chlorides)
+normality(Wine.train$free.sulfur.dioxide)
+normality(Wine.train$total.sulfur.dioxide)
+normality(Wine.train$density)
+normality(Wine.train$pH)
+normality(Wine.train$sulphates)
+normality(Wine.train$alcohol)
+
+#Discretizing data
+Total_Wine$fixed.acidity <- mycut(Total_Wine$fixed.acidity, 10)
+Total_Wine$volatile.acidity <- mycut(Total_Wine$volatile.acidity, 10)
+Total_Wine$citric.acid <- mycut(Total_Wine$citric.acid,10)
+Total_Wine$residual.sugar <- mycut(Total_Wine$residual.sugar,10)
+Total_Wine$chlorides <- mycut(Total_Wine$chlorides,10)
+Total_Wine$free.sulfur.dioxide <- mycut(Total_Wine$free.sulfur.dioxide,10)
+Total_Wine$total.sulfur.dioxide <- mycut(Total_Wine$total.sulfur.dioxide,10)
+Total_Wine$density <- mycut(Total_Wine$density,10)
+Total_Wine$pH <- mycut(Total_Wine$pH,10)
+Total_Wine$sulphates <- mycut(Total_Wine$sulphates,10)
+Total_Wine$alcohol <- mycut(Total_Wine$alcohol,10)
+Total_Wine$quality <- as.factor(Total_Wine$quality)
+
+Wine.Split <- splitdata(Total_Wine,0.7)
+Wine.train <- Wine.Split$traindata
+Wine.test <- Wine.Split$testdata
+
+#Applying Naive Bayes
+nb.wine <- naiveBayes(wine.type~.,data = Wine.train)
+pred.nb.wine <- predict(nb.wine, newdata = Wine.test,type = "class")
+nb.conf <- confusion(Wine.test$wine.type, pred.nb.wine)
+
+#Cross Validation
+nb.kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    tempmodel = naiveBayes(wine.type~.,data = temptrain)
+    temppred = predict(tempmodel, newdata = temptest,type = "class")
+    analysis = confusion(temptest$wine.type, temppred)
+    accvector[k] = analysis$acc
+  }
+  return(mean(accvector))
+}
+
+nb.kflval(10,Total_Wine)
+
+#Support Vector Machines
+rm(Total_Wine)
+Total_Wine <- rbind(Red_Wine,White_Wine)
+wine.svm <- svm(wine.type~.,data=Wine.train,kernel="linear",cost=1,scale=T)
+pred.svm <- predict(wine.svm, newdata = Wine.test)
+svm.conf <- confusion(Wine.test$wine.type, pred.svm)
+plot(wine.type~., wine.svm,data = Wine.train)
+
+#Tuning gamma and cost on SVM
+svm.tuning <- tune.svm(wine.type~., data = Total_Wine, gamma = 10^(-6:-3), cost = 10^(1:2))
+svm.tuning$best.parameters
+svm.tuning.2 <- tune.svm(wine.type~., data = Total_Wine, gamma=10^(-3:2), cost = 10^(2:4))
+
+#Optmal SVM 
+opt.svm <- svm(wine.type~., data = Wine.train, kernel="linear", gamma = svm.tuning.2$best.parameters$gamma, cost = svm.tuning.2$best.parameters$cost)
+
+#Cross Validation of SVM
+svm.kflval <- function(k,data){
+  folds = createfolds(nrow(data),k)
+  accvector = 1:k
+  for(k in 1:k){
+    temptrain = data[folds!=k,]
+    temptest = data[folds==k,]
+    tempmodel = svm(wine.type~., data = Wine.train, kernel="linear", gamma = svm.tuning.2$best.parameters$gamma, cost = svm.tuning.2$best.parameters$cost)
+    temppred = predict(tempmodel, newdata = temptest)
+    analysis = confusion(temptest$wine.type, temppred)
+    accvector[k] = analysis$acc
+  }
+  return(mean(accvector))
+}
+
+svm.kflval(10,Total_Wine)
+
+
+
+#Neural Networks
+wine.nnet <- nnet(wine.type~.,data=Wine.test,size=10,linout=FALSE, maxit = 500)
+pred.nnet <- predict(wine.nnet, newdata = Wine.test, type= "class")
+confusion(Wine.test$wine.type, pred.nnet)
+
+nnet.tuning <- tune.nnet(wine.type~., data=Total_Wine, size = 1:15, trace = FALSE, tunecontrol = tune.control(nrepeat = 5, sampling = "cross", cross =10,) )
+1-mean(nnet.tuning$performances$error)
+
+#Plotting Neaural Networks
+#import the function from Github
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+plot.nnet(wine.nnet)
+
+@
+\end{document}

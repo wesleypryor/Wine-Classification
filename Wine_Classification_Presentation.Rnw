@@ -1,0 +1,579 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+\usepackage{booktabs}
+\usepackage{dirtytalk}
+
+\setbeamersize{text margin left = 16pt, text margin right = 16pt}
+
+\title [Wine Classification]{Classifying Wine using the Wine Quality Database}
+\author{Wesley D. Pryor}
+\date{\today}
+
+\begin{document}
+<<echo=FALSE, eval=TRUE, include=FALSE>>=
+library(knitr)
+library(psych)
+options(width=30)
+opts_chunk$set(size= 'footnotesize', fig.path='figure/beamer-',fig.align='center',
+fig.show='hold',size='footnotesize',
+prompt=TRUE, comment=NA,
+tidy=TRUE, tidy.opts=list(width.cutoff=10)
+)
+render_listings()
+
+#packages
+library(kknn)
+library(class)
+library(party)
+library(rpart)
+library(rattle)
+library(exact2x2)
+library(e1071)
+library(rpart.plot)
+library(mlbench)
+library(nnet)
+library(kernlab)
+library(microbenchmark)
+library(flexclust)
+library(pROC)
+library(ggplot2)
+library(devtools)
+source_url('https://gist.githubusercontent.com/fawda123/7471137/raw/466c1474d0a505ff044412703516c34f1a4684a5/nnet_plot_update.r')
+
+# Confusion funciton
+confusion = function(true,pred,costs=NULL){
+  counts <- table(true,pred)
+  N <- sum(counts)
+  acc = sum(diag(counts))/N
+  rates = prop.table(counts,1)
+  rates[is.nan(rates)] <- 0
+  sensitivities = diag(rates)
+  precisions = diag(prop.table(counts,2))
+  precisions[is.nan(precisions)] <- 0
+  F1s = 2*sensitivities*precisions/(sensitivities+precisions)
+  F1s[is.nan(F1s)] <- 0
+  if(is.null(costs)){
+    costs=0*counts+1 
+    diag(costs)<-0 
+  }
+  cost = sum(counts*costs)
+  return(list(counts=counts,acc=acc,rates=rates,sensitivities=sensitivities,precisions=precisions,F1s=F1s,cost=cost))
+}
+
+#Splitdata function for splitting data
+splitdata <- function(data, trainfrac){
+  datasplit <- sample(nrow(data),round(trainfrac*nrow(data),0))
+  traindata <- data[datasplit,]
+  testdata <- data[-datasplit,]
+  return(list(traindata=traindata, testdata=testdata))
+}
+
+#Testing normality
+normality = function(data){
+  hist(data)
+  print(shapiro.test(data))
+  qqnorm(data)
+}
+
+mycut = function(x,n){
+  q = quantile(x, probs = seq(0, 1, length.out=n+1))
+  z = cut(x,q,include.lowest=T)
+  return(z)
+}
+@
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}
+  \frametitle{Overview}
+  \tableofcontents
+\end{frame}
+
+\section{Introduction}
+\begin{frame}
+\frametitle{Introduction}
+  \begin{itemize}
+  \item In this problem, we are using the Wine Quality database from UCI Machine Learning Repository. Traditionally this database is used to predict the quality of a wine. 
+  \item This project will use the two databases, red wines and white wines. The two data sets will be combined and the type of wine, red or white, will be predicted using techniques from this course. 
+  \item We will test the database using the following classificaiton techniques:
+    \begin{itemize}
+    \item Decision Tress 
+    \item K nearest neighbors
+    \item Weighted K nearest neighbors
+    \item Naive Bayes
+    \item Support Vector Machines
+    \item Neural Networks
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}
+\frametitle{Wine Quality Data}
+The origianl data contains the following observations from the wine:
+  \begin{columns}
+    \column{0.5\textwidth}
+      \begin{itemize}
+      \item Fixed Acidity
+      \item Volatile Acidity
+      \item Citric Acid
+      \item Residual Sugar
+      \item Chlorides
+      \item Free Sulfur Dioxide
+      \end{itemize}
+    \column{0.5\textwidth}
+      \begin{itemize}
+      \item Total Sulfur Dioxide
+      \item Density
+      \item pH
+      \item Sulphates
+      \item Alcohol
+      \item Quality
+      \end{itemize}
+  \end{columns}
+\vspace{0.5 cm}
+If we are trying to predict whether a wine is red or white, then we need to add that information into the data frame so that we canc use that as a predictor variable.
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Data Manipulation}
+The original data was divided into a set of white wines and a set of red wines. 
+\begin{block}{Editing the Data to Include Wine Types}
+<<echo=FALSE>>=
+set.seed(1506)
+Red_Wine <- read.csv("~/Downloads/winequality-red.csv", sep=";")
+White_Wine <- read.csv("~/Downloads/winequality-white.csv", sep=";")
+@
+
+<<tidy=FALSE>>=
+White_Wine <- read.csv("~/Downloads/winequality-white.csv", 
+                       sep=";")
+Red <- c(rep("red",nrow(Red_Wine)))
+White <- c(rep("white",nrow(White_Wine)))
+Red_Wine <- cbind(Red_Wine,Red)
+White_Wine <- cbind(White_Wine,White)
+@
+
+<<echo=FALSE>>=
+# Changing the type of wine columns
+colnames(Red_Wine)[13] <- "wine.type"
+colnames(White_Wine)[13] <- "wine.type"
+
+# Combining Both Red and White Wines into one data set
+Total_Wine <- rbind(Red_Wine,White_Wine)
+Total_Wine$quality <- as.factor(Total_Wine$quality)
+Wine.Type <- Total_Wine$wine.type
+
+# Splitting Data for testing purposes
+Wine.Split <- splitdata(Total_Wine,0.7)
+Wine.train <- Wine.Split$traindata
+Wine.test <- Wine.Split$testdata
+@
+\end{block}
+To then combine the data sets, the column for red and white was relabelled to \texttt{wine.type} so the models could predict the the wines based on the factors.
+\end{frame}
+
+\section{Decision Trees}
+\subsection{R Part Decision Trees}
+\begin{frame}[fragile]
+\frametitle{R Part}
+Initially I decided to run a Decision Tree using the rPart commands. Here is the initial decision tree.
+\begin{block}
+<<echo=FALSE>>=
+wine.tree <- rpart(wine.type~., data = Wine.train)
+@
+
+<<tidy=FALSE,fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+plot.wine.tree <- fancyRpartPlot(wine.tree, 
+                                 palettes = 
+                                   c("Reds", "Greys"))
+@
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Analysis of Initial Decision Tree}
+\begin{block}{Prediction and Accuracy}
+<<tidy=FALSE>>=
+pred.tree <- predict(wine.tree, 
+                     newdata = Wine.test, type="class")
+tree.conf <- confusion(Wine.test$wine.type,
+                       pred.tree,costs = NULL)
+tree.acc <- tree.conf$acc
+@
+The accuracy is \Sexpr{tree.acc}.
+\end{block}
+\end{frame}
+
+
+\begin{frame}[fragile]{Determining the best R Part Parameters}
+\begin{block}{Tuning R Part}
+<<tidy=FALSE>>=
+tree.tune <- tune.rpart(wine.type~., 
+                        data = Total_Wine, 
+                        cp=seq(0,0.2,0.001), 
+                        maxdepth = 1:10)
+tree.tune.2 <- tune.rpart(wine.type~., 
+                          data = Total_Wine, 
+                          minsplit = seq(50,125,5))
+@
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Tuning Plots}
+\begin{block}{Plots of tuning funcitons}
+<<tidy=FALSE,fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+plot(tree.tune)
+plot(tree.tune.2)
+@
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Refit Decision Tree}
+\begin{block}{Optimal Parameters}
+<<echo=FALSE,results='hide'>>=
+best.cp <- tree.tune$best.parameters$cp
+best.maxdepth <- tree.tune$best.parameters$maxdepth
+best.minsplit <- tree.tune.2$best.parameters
+@
+ The best cp is \Sexpr{best.cp}. The best maxdepth is \Sexpr{best.maxdepth}. The best minsplit was \Sexpr{best.minsplit}.
+<<echo=FALSE,results='hide'>>=
+tree.2 <- rpart(wine.type~., data = Wine.train, control = rpart.control(minsplit = tree.tune.2$best.parameters$minsplit, cp = tree.tune$best.parameters$cp, maxdepth = tree.tune$best.parameters$maxdepth))
+@
+
+<<echo=FALSE, fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+fancyRpartPlot(tree.2, palettes = c("Reds", "Greys"))
+@
+\end{block}
+<<echo=FALSE,results='hide'>>=
+pred.tree.2 <- predict(tree.2, newdata = Wine.test, type = "class")
+tree.conf.2 <- confusion(Wine.test$wine.type,pred.tree.2,costs = NULL)
+tree.2.acc <- tree.conf.2$acc
+@
+The accuracy of the refitted decision tree is \Sexpr{tree.2.acc}
+\end{frame}
+
+\subsection{C Tree Method}
+
+\begin{frame}[fragile]
+\frametitle{C Tree}
+<<fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+wine.ctree <- ctree(wine.type~., data= Wine.train)
+@
+
+<<echo=FALSE, results= 'hide'>>=
+pred.tree.3 <- predict(wine.ctree, newdata = Wine.test)
+wine.ctree.conf <- confusion(Wine.test$wine.type, pred.tree.3, costs = NULL)
+ctree.acc <- wine.ctree.conf$acc
+@
+The accuracy for this model is \Sexpr{ctree.acc}.
+\end{frame}
+
+\begin{frame}[fragile]{Tuning C Tree}
+I wanted to attempt the ctree method and compare this to the R Part tree. 
+\begin{block}{Tuning the model}
+<<tidy=FALSE>>=
+maxdepth <- 1:10
+  accvec <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, 
+                       controls = 
+                        ctree_control(minsplit = 
+                        50, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,
+                        temp.pred, costs = NULL)
+    accvec[i] <- temp.conf$acc
+  }
+@
+This was run for a minsplit of 50,100,150. 
+\end{block}
+\end{frame}
+
+
+\begin{frame}[fragile]
+\frametitle{More Tuning of C Tree}
+<<echo=FALSE,results='hide'>>=
+  #100 misplit
+  accvec.2 <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 100, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,temp.pred, costs = NULL)
+    accvec.2[i] <- temp.conf$acc
+  }
+  
+  #150 minsplit
+  accvec.3 <- NULL
+  for(i in 1:length(maxdepth)){
+    temp.tree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = 150, maxdepth = maxdepth[i]))
+    temp.pred <- predict(temp.tree, newdata = Wine.test)
+    temp.conf <- confusion(Wine.test$wine.type,temp.pred, costs = NULL)
+    accvec.3[i] <- temp.conf$acc
+  }
+
+#Creating information matrix
+max.depth <- as.vector(c(rep(list(1,2,3,4,5,6,7,8,9,10),3)))
+min.split <- as.vector(c(rep(list(50,100,150),10)))
+accuracy <- as.vector(rbind(accvec, accvec.2,accvec.3))
+acc.matrix <- cbind(max.depth,min.split,accuracy)
+colnames(acc.matrix)[1] <- "maxdepth"
+colnames(acc.matrix)[2] <- "misplit"
+colnames(acc.matrix)[3] <- "accuracy"
+which.max(accuracy)
+best.ctree.parameters <- acc.matrix[which.max(accuracy),]
+
+opt.ctree <- ctree(wine.type~., data= Wine.train, controls = ctree_control(minsplit = best.ctree.parameters$minsplit, maxdepth = best.ctree.parameters$maxdepth))
+opt.pred <- predict(opt.ctree, newdata = Wine.test)
+opt.conf <- confusion(Wine.test$wine.type, opt.pred, costs = NULL)
+opt.acc.conf <- opt.conf$acc
+@
+The minsplit was tested for 50, 100, and 150. I got that the following measures were the best for the model.
+<<tidy=FALSE>>=
+best.ctree.parameters <- 
+  acc.matrix[which.max(accuracy),]
+@
+The parameters were entered to contraol the ctree and the accuracy was caclulated to be \Sexpr{opt.acc.conf}.
+\end{frame}
+
+\section{K Nearest Neighbors}
+
+\begin{frame}[fragile]
+\frametitle{K nearest neighbors}
+Conveniece commands were run for K nearest neighbors.
+\begin{block}{K nearest neighbors}
+<<echo=FALSE,results='hide'>>=
+x = Total_Wine[,1:11]
+xbar = apply(x,2,mean)
+xbarMat = cbind(rep(1,nrow(Total_Wine)))%*%xbar
+s = apply(x,2,sd)
+sMat = cbind(rep(1,nrow(Total_Wine)))%*%s
+z = (x-xbarMat)/sMat
+
+z.split <- sample(nrow(z),round(nrow(z)*0.7,0))
+z.train <- z[z.split,]
+z.test <- z[-z.split,]
+
+wine.knn <- knn(train = z.train, test = z.test, k=3, cl = Wine.Type[z.split])
+knn.conf <- confusion(Wine.Type[-z.split],wine.knn,costs=NULL)
+acc.knn.conf <- knn.conf$acc
+@
+The accuracy for K nearest neighbors is \Sexpr{acc.knn.conf}
+<<echo=FALSE, results='hide'>>=
+x <- Total_Wine[,-13]
+y <- Total_Wine[,13]
+knn.tune <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "cross"))
+knn.tune.2 <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "fix"))
+knn.tune.3 <- tune.knn(x,y, k = seq(2,20,1), tunecontrol = tune.control(sampling = "boot"))
+best.k <- knn.tune$best.parameters$k
+best.2.k <- knn.tune.2$best.parameters$k
+best.3.k <- knn.tune.3$best.parameters$k
+@
+I tuned the function with cross-validation, bootstrapping and fixed smapling. I tested for values of $k$=2,\ldots,20. The best value of $k$ for cross-validation is \Sexpr{best.k}. The best value for fixed sampling method is \Sexpr{best.2.k}. The best k for bootstrapping is \Sexpr{best.3.k}.
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Tuning Plots for Cross-Validation and Fix}
+<<echo=FALSE, fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+plot(knn.tune)
+plot(knn.tune.2)
+@
+\end{frame}
+
+\begin{frame}[fragile]
+\frametitle{Tuning Plot for Bootstrapping}
+<<echo=FALSE, fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+plot(knn.tune.3)
+@
+\end{frame}
+
+\begin{frame}[fragile]{Tuned K Nearest Neighbors}
+<<echo=FALSE, results='hide'>>=
+cross.k <- knn.tune$best.parameters$k
+fix.k <-knn.tune.2$best.parameters$k
+boot.k <-knn.tune.3$best.parameters$k
+wine.knn.2 <- knn(train = z.train, test = z.test, k=knn.tune$best.parameters$k, cl = Wine.Type[z.split])
+wine.knn.3 <- knn(train = z.train, test = z.test, k=knn.tune.2$best.parameters$k, cl = Wine.Type[z.split])
+wine.knn.4 <- knn(train = z.train, test = z.test, k=knn.tune.3$best.parameters$k, cl = Wine.Type[z.split])
+knn.2.conf.acc <- confusion(Wine.Type[-z.split],wine.knn.2,costs=NULL)$acc
+knn.3.conf <- confusion(Wine.Type[-z.split],wine.knn.3,costs=NULL)$acc
+knn.4.conf <- confusion(Wine.Type[-z.split],wine.knn.4,costs=NULL)$acc
+@
+The best $k$ parameters were \Sexpr{cross.k} for Cross Validation. The best $k$ for fixed sampling was \Sexpr{fix.k}. The best bootstrapping $k$ was \Sexpr{boot.k}. Once these parameters were determined, the three values were re-submitted into the algorithm. The value for the cross validation was \Sexpr{knn.2.conf.acc}. Fix provided an accuracy of \Sexpr{knn.3.conf}. Bootstrapping had an accuracy of \Sexpr{knn.4.conf}
+\end{frame}
+
+\subsection{Weighted K nearest neighbors}
+
+\begin{frame}[fragile]
+\frametitle{Weighted K nearest neighbors}
+<<echo=FALSE,results='hide'>>=
+z <- cbind(z, Wine.Type)
+z.train <- z[z.split,]
+z.test <- z[-z.split,]
+weight.knn.wine <- kknn(Wine.Type~.,train = z.train, test = z.test, k=knn.tune$best.parameters$k, kernel = "triangular")
+pred.weight <- predict(weight.knn.wine, newdata = z.test)
+weight.knn.acc <- confusion(z.test$Wine.Type, pred.weight)$acc
+@
+\begin{block}{Inital Testing}
+When first testing weighted K nearest neighbors with a triangular kernel and the best $k$ value for tuning with cross-validation from the previous model.\\
+The initial accuracy for the model was \Sexpr{weight.knn.acc}.\\
+With help from Chad, I was able to to tune the weighted K nearest neighbor model with all eight kernels available to the \texttt{kknn} function.
+It was determined that the optimal kernel was the inverse kernel and the best value of $k$ is 3. 
+\end{block}
+<<echo=FALSE,results='hide'>>=
+tune.kknn <- function(K,kernels){
+  acc <- NULL
+  for(i in 1: length(K)){
+  temp.model <- kknn(Wine.Type~., train = z.train, test = z.test, k = i, kernel = kernels,distance = 2)
+  pred.temp <- predict(temp.model, newdata = z.test)
+  temp.conf <- confusion(z.test$Wine.Type, pred.temp)
+  acc[i] <- temp.conf$acc
+  }
+  opt.k <- which.max(acc)
+  opt.acc <- acc[opt.k]
+  return(list(k=opt.k, accuracy = opt.acc))
+}
+K <- 2:30
+rect <- tune.kknn(K,"rectangular")
+triangle <- tune.kknn(K, "triangular")
+ep <- tune.kknn(K, "epanechnikov")
+biw <- tune.kknn(K, "biweight")
+triw <- tune.kknn(K, "triweight")
+cosine <- tune.kknn(K,"cos")
+invert <- tune.kknn(K,"inv")
+gauss <- tune.kknn(K, "gaussian")
+rank.weight <- tune.kknn(K,"rank")
+optimal <- tune.kknn(K, "optimal")
+weighted.accuracy <- list(rect$accuracy, triangle$accuracy, ep$accuracy, biw$accuracy, triw$accuracy, cosine$accuracy, invert$accuracy, gauss$accuracy, rank.weight$accuracy, optimal$accuracy)
+weighted.k <- list(rect$k, triangle$k, ep$k, biw$k, triw$k, cosine$k, invert$k, gauss$k, rank.weight$k, optimal$k)
+opt.weights <- cbind(weighted.k,weighted.accuracy)
+opt.kknn <- kknn(Wine.Type~., train = z.train, test = z.test, k = 3, kernel = "inv")
+pred.kknn <- predict(opt.kknn, newdata = z.test)
+adj.kknn.acc <- confusion(z.test$Wine.Type, pred.kknn)$acc
+@
+The accuracy of the adjusted weighted K nearest neighbors is \Sexpr{adj.kknn.acc}
+\end{frame}
+
+\section{Naive Bayes}
+
+\begin{frame}[fragile]{Normality for Naive Bayes}
+\begin{block}{Testing for normailty}
+The data was initially tested for normailty and all 11 numerical columns of data appeared to be non-normal.Most Q-Q Plots resulted in an image similar to
+<<echo=FALSE, fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+qqnorm(Total_Wine$fixed.acidity)
+@
+The 11 columns were discretized using a \texttt{mycut} function to make 10 cuts. 
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]{Running Naive Bayes}
+Once the data was discretized for the 11 non-normal observations, the following code was run to predict the wine type.
+\begin{block}{R code}
+<<echo=FALSE, results='hide'>>=
+Total_Wine$fixed.acidity <- mycut(Total_Wine$fixed.acidity, 10)
+Total_Wine$volatile.acidity <- mycut(Total_Wine$volatile.acidity, 10)
+Total_Wine$citric.acid <- mycut(Total_Wine$citric.acid,10)
+Total_Wine$residual.sugar <- mycut(Total_Wine$residual.sugar,10)
+Total_Wine$chlorides <- mycut(Total_Wine$chlorides,10)
+Total_Wine$free.sulfur.dioxide <- mycut(Total_Wine$free.sulfur.dioxide,10)
+Total_Wine$total.sulfur.dioxide <- mycut(Total_Wine$total.sulfur.dioxide,10)
+Total_Wine$density <- mycut(Total_Wine$density,10)
+Total_Wine$pH <- mycut(Total_Wine$pH,10)
+Total_Wine$sulphates <- mycut(Total_Wine$sulphates,10)
+Total_Wine$alcohol <- mycut(Total_Wine$alcohol,10)
+Total_Wine$quality <- as.factor(Total_Wine$quality)
+@
+
+<<tidy=FALSE>>=
+nb.wine <- naiveBayes(wine.type~.,
+                      data = Wine.train)
+pred.nb.wine <- predict(nb.wine, 
+                        newdata = Wine.test,
+                        type = "class")
+nb.conf <- confusion(Wine.test$wine.type, 
+                     pred.nb.wine)$acc
+@
+The test resulted in an accuracy of \Sexpr{nb.conf}.
+\end{block}
+\end{frame}
+
+\section{Support Vector Machines}
+
+\begin{frame}[fragile]
+\frametitle{Running Support Vector Machines}
+\begin{block}{R code for Support Vector Machines}
+<<tidy=FALSE>>=
+rm(Total_Wine)
+Total_Wine <- rbind(Red_Wine,White_Wine)
+wine.svm <- svm(wine.type~.,data=Wine.train,
+                kernel="linear",cost=1,scale=T)
+pred.svm <- predict(wine.svm, newdata = Wine.test)
+svm.conf <- confusion(Wine.test$wine.type, pred.svm)
+@
+\end{block}
+\end{frame}
+
+\begin{frame}[fragile]{Tuning Support Vector Machines}
+The algorithm was then tuned for the gamma and cost parameters with the following command. The first tuning function resulted in best parameters at the boundaries of the tested gamma and cost. These values were adjusted
+\begin{block}{Tuning Commands}
+<<tidy=FALSE>>=
+svm.tuning <- tune.svm(wine.type~., 
+                       data = Total_Wine, 
+                       gamma = 10^(-6:-3), 
+                       cost = 10^(1:2))
+svm.tuning.2 <- tune.svm(wine.type~., 
+                         data = Total_Wine, 
+                         gamma=10^(-3:2), 
+                         cost = 10^(2:4))
+@
+
+<<echo=FALSE,results='hide'>>=
+opt.svm.parameters <- svm.tuning.2$best.parameters
+opt.svm <- svm(wine.type~., data = Wine.train, kernel="linear", gamma=opt.svm.parameters$gamma, cost = opt.svm.parameters$cost)
+pred.opt.svm <- predict(opt.svm, newdata = Wine.test)
+opt.svm.conf <- confusion(Wine.test$wine.type, pred.opt.svm)$acc
+@
+With optimal gamma and cost from the second tuning run, the accuracy for support vector machines was 0.9964084.
+\end{block}
+\end{frame}
+
+\section{Neural Networks}
+
+\begin{frame}[fragile]{Neural Networks}
+<<tidy=FALSE,results='hide'>>=
+wine.nnet <- nnet(wine.type~.,data=Wine.test,
+                  size=10,linout=FALSE, 
+                  maxit = 500)
+pred.nnet <- predict(wine.nnet, 
+                     newdata = Wine.test, 
+                     type= "class")
+nnet.conf <- confusion(Wine.test$wine.type, 
+                       pred.nnet)
+@
+Neural Networks were tested with the code and found an accuracy of \Sexpr{nnet.conf$acc}
+\end{frame}
+
+\begin{frame}[fragile]{Plotting Neural Networks}
+\begin{block}{Source for Plots}
+The link provided in our code for plotting neural networks gave us a source for the URL to plot using the command \texttt{plot.nnet}.
+\end{block}
+<<echo=FALSE, message=FALSE,warning=FALSE, fig.height=3, fig.width=4, out.height='2in', out.width='.5\\linewidth'>>=
+plot.nnet(wine.nnet)
+@
+\end{frame}
+
+\section{Conclusion}
+
+\begin{frame}{Concluding Remarks}
+\begin{itemize}
+\item The accuracies for the model overall was very excellent. I believe that some of the columns of data were key predictors for the models. 
+\item After looking at the data more, I noticed that alcohol, density, Total Sulfur Dioxides, Free Sulfur Dioxides, cholrides and pH were great predictors of the type of wine.
+\item it would be interesting to test the data without those key points and test the data with just those key points. 
+\end{itemize}
+\end{frame}
+
+\end{document}
